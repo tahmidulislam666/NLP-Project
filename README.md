@@ -1,6 +1,6 @@
 # AnomalyShield — Harmful Speech Detection Chatbot
 
-A local Flask chatbot that blocks harmful English, Bangla, and code-mixed messages, assigns **mild / moderate / severe** severity, records violations, and applies escalating cooldowns. It gives users a constructive alternative instead of silently rejecting them.
+A local Flask chatbot that uses a model trained on the supplied Jigsaw and Bangla datasets to block harmful English, Bangla, and code-mixed messages. It assigns **mild / moderate / severe** severity, records violations, and applies escalating cooldowns.
 
 ## Run
 
@@ -11,7 +11,7 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Open `http://127.0.0.1:5000`.
+Train the model first, then open `http://127.0.0.1:5000`.
 
 ## Moderation policy
 
@@ -24,14 +24,14 @@ Open `http://127.0.0.1:5000`.
 | 3 violations | 1 minute block |
 | 5+ violations | 5 minute block |
 
-The demo stores its state in memory so restarting the server resets all counts. Production deployments should use authenticated accounts, a database or Redis, audit logging, appeals/review, rate limiting, and a properly evaluated trained classifier.
+The app has no rule-based, keyword, or sentiment fallback: it refuses messages until a trained model is available. The demo stores state in memory so restarting the server resets all counts. Production deployments should use authenticated accounts, a database or Redis, audit logging, appeals/review, rate limiting, and a properly evaluated trained classifier.
 
 ## Dataset-backed model (optional)
 
-The supplied source files were extracted to `data/raw/` (ignored by Git). To train a character n-gram multilingual baseline:
+The supplied source files were extracted to `data/raw/` (ignored by Git). Train this character n-gram multilingual model before starting the app:
 
 ```powershell
 python train_model.py --data-dir data/raw
 ```
 
-Use `--max-rows 20000` for a quicker experiment. Evaluate the model on held-out English and Bangla data before moderation use; keyword/rule signals in the running demo remain intentionally visible and easy to audit.
+Use `--max-rows 20000` for a quicker experiment. Evaluate the model on held-out English and Bangla data before moderation use.

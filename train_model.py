@@ -25,16 +25,25 @@ def main() -> None:
     data = Path(args.data_dir)
 
     english = pd.read_csv(data / "train.csv")
-    toxic_columns = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
-    english["label"] = (english[toxic_columns].sum(axis=1) > 0).astype(int)
+    # Turn the six Jigsaw labels into severity classes. This is the only source
+    # of severity decisions at runtime; app.py contains no keyword rules.
+    harmful_count = english[["toxic", "obscene", "insult", "identity_hate"]].sum(axis=1)
+    english["label"] = "safe"
+    english.loc[harmful_count > 0, "label"] = "mild"
+    english.loc[harmful_count >= 2, "label"] = "moderate"
+    english.loc[(english["threat"] == 1) | (english["severe_toxic"] == 1), "label"] = "severe"
     en = english[["comment_text", "label"]].rename(columns={"comment_text": "text"})
 
     # The CSV is UTF-8; errors='replace' keeps one malformed row from stopping training.
     bangla = pd.read_csv(data / "Bengali hate speech .csv", encoding="utf-8", encoding_errors="replace")
     bn = bangla[["sentence", "hate"]].rename(columns={"sentence": "text", "hate": "label"})
+    bn["label"] = bn["label"].map({0: "safe", 1: "moderate"})
     dataset = pd.concat([en, bn], ignore_index=True).dropna()
     if args.max_rows:
-        dataset = dataset.groupby("label", group_keys=False).apply(lambda x: x.sample(min(len(x), args.max_rows // 2), random_state=42))
+        per_class = max(1, args.max_rows // dataset["label"].nunique())
+        dataset = dataset.groupby("label", group_keys=False).apply(
+            lambda x: x.sample(min(len(x), per_class), random_state=42)
+        )
 
     model = Pipeline([
         ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, max_features=180_000, sublinear_tf=True)),

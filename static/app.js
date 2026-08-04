@@ -19,7 +19,9 @@ async function submit() {
   addBubble(escapeHTML(text), 'user'); message.value = ''; send.disabled = true;
   try {
     const response = await fetch('/api/messages', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:text})});
-    const data = await response.json(); violationEl.textContent = data.violations ?? 0;
+    const data = await response.json();
+    if (!response.ok) { addBubble(`<strong>Moderation unavailable</strong>${escapeHTML(data.error || 'Please try again.')}`, 'alert'); return; }
+    violationEl.textContent = data.violations ?? 0;
     if (data.blocked) { addBubble('<strong>Message paused</strong>Your cooldown is still active.', 'alert'); showCooldown(data.seconds_left); return; }
     if (data.unsafe) {
       addBubble(`<strong>Blocked · ${data.severity.toUpperCase()}</strong>${data.category}. Let’s keep the conversation safe.<div class="suggestion">Try instead: “${escapeHTML(data.safer_alternative)}”</div>`, 'alert');
@@ -29,4 +31,4 @@ async function submit() {
   finally { if (!document.body.classList.contains('blocked')) send.disabled = false; message.focus(); }
 }
 send.addEventListener('click', submit); message.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }});
-document.querySelector('#reset').addEventListener('click', async () => { await fetch('/api/reset', {method:'POST'}); violationEl.textContent = '0'; statusTitle.textContent = 'Safety check active'; statusCopy.textContent = 'English, বাংলা, and code-mixed messages are supported.'; });
+document.querySelector('#reset').addEventListener('click', async () => { await fetch('/api/reset', {method:'POST'}); violationEl.textContent = '0'; statusTitle.textContent = 'Model moderation active'; statusCopy.textContent = 'Trained on English and বাংলা harmful-speech datasets.'; });

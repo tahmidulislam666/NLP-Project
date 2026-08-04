@@ -1,7 +1,6 @@
 """AnomalyShield: a small multilingual harmful-speech moderation chatbot."""
 from __future__ import annotations
 
-import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -24,21 +23,12 @@ except (ImportError, OSError):
 # Demo-grade in-memory state. Replace this with Redis/database state in production.
 users: dict[str, dict] = defaultdict(lambda: {"violations": 0, "blocked_until": 0.0})
 
-RULES = {
-    "severe": {
-        "label": "Threat / violence",
-        "patterns": [r"\b(kill|murder|rape|shoot|stab|bomb)\b", r"\b(i('ll| will)|we('ll| will))\s+(kill|hurt|find)\b", r"মেরে ফেল|খুন কর|ধর্ষণ|গুলি কর|বোমা"],
-    },
-    "moderate": {
-        "label": "Hate / abusive language",
-        "patterns": [r"\b(hate you|go die|terrorist|nazi)\b", r"\b(fuck|bitch|asshole|bastard)\b", r"হারামি|শালা|কুত্তা|গালি|ঘৃণা করি"],
-    },
-    "mild": {
-        "label": "Offensive / bullying language",
-        "patterns": [r"\b(idiot|stupid|dumb|loser|shut up)\b", r"\b(you suck|worthless)\b", r"বোকা|পাগল|নির্বোধ|অপদার্থ"],
-    },
+SEVERITY_LABELS = {
+    "safe": "Safe message",
+    "mild": "Model-detected offensive language",
+    "moderate": "Model-detected hate / abuse",
+    "severe": "Model-detected severe toxicity / threat",
 }
-SEVERITY_SCORE = {"safe": 0, "mild": 1, "moderate": 2, "severe": 3}
 
 
 def client_id() -> str:
@@ -46,20 +36,14 @@ def client_id() -> str:
     return request.headers.get("X-User-Id") or request.remote_addr or "anonymous"
 
 
-def rule_assessment(text: str) -> tuple[str, str]:
-    text = text.lower()
-    for severity in ("severe", "moderate", "mild"):
-        if any(re.search(pattern, text, re.IGNORECASE) for pattern in RULES[severity]["patterns"]):
-            return severity, RULES[severity]["label"]
-    # Excessive shouting is a low-confidence bullying signal.
-    letters = [c for c in text if c.isalpha()]
-    if len(letters) > 10 and sum(c.isupper() for c in letters) / len(letters) > 0.8:
-        return "mild", "Aggressive tone"
-    if MODEL is not None:
-        probability = float(MODEL.predict_proba([text])[0][1])
-        if probability >= 0.80:
-            return "moderate", f"Model-detected toxicity ({probability:.0%} confidence)"
-    return "safe", "Safe message"
+def model_assessment(text: str) -> tuple[str, str]:
+    """Classify with the trained dataset model only—no keywords or heuristics."""
+    probabilities = MODEL.predict_proba([text])[0]
+    classes = MODEL.named_steps["classifier"].classes_
+    index = int(probabilities.argmax())
+    severity = str(classes[index])
+    confidence = float(probabilities[index])
+    return severity, f"{SEVERITY_LABELS[severity]} ({confidence:.0%} confidence)"
 
 
 def safer_alternative(text: str, severity: str) -> str:
@@ -85,6 +69,8 @@ def moderate_message():
         return jsonify(error="Please type a message."), 400
     if len(text) > 1000:
         return jsonify(error="Messages must be 1,000 characters or fewer."), 400
+    if MODEL is None:
+        return jsonify(error="No trained model found. Run: python train_model.py --data-dir data/raw, then restart the app."), 503
 
     user = users[client_id()]
     now = time.time()
@@ -92,7 +78,7 @@ def moderate_message():
     if seconds_left:
         return jsonify(blocked=True, seconds_left=seconds_left, violations=user["violations"], allowed=False)
 
-    severity, category = rule_assessment(text)
+    severity, category = model_assessment(text)
     unsafe = severity != "safe"
     cooldown = 0
     if unsafe:
