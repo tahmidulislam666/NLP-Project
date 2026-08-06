@@ -85,7 +85,7 @@ def moderate_message():
         user["violations"] += 1
         # Severe incidents block immediately; repeated lower-level incidents escalate.
         if severity == "severe":
-            cooldown = 
+            cooldown = 300
         elif user["violations"] >= 5:
             cooldown = 120
         elif user["violations"] >= 3:
