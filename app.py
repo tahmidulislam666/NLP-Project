@@ -11,14 +11,19 @@ app = Flask(__name__, static_folder="static")
 
 # A trained pipeline is optional: the app starts without ML dependencies and uses
 # it automatically when train_model.py has produced this artifact.
-MODEL = None
+MODEL_BUNDLE = None
+MODEL_ERROR = None
 try:
     import joblib
     model_path = Path("models/toxicity_pipeline.joblib")
     if model_path.exists():
-        MODEL = joblib.load(model_path)
+        candidate = joblib.load(model_path)
+        if isinstance(candidate, dict) and {"safety_model", "severity_model"}.issubset(candidate):
+            MODEL_BUNDLE = candidate
+        else:
+            MODEL_ERROR = "The saved model uses the old single-stage format. Retrain it with train_model.py."
 except (ImportError, OSError):
-    pass
+    MODEL_ERROR = "The trained model could not be loaded."
 
 # Demo-grade in-memory state. Replace this with Redis/database state in production.
 users: dict[str, dict] = defaultdict(lambda: {"violations": 0, "blocked_until": 0.0})
@@ -38,12 +43,19 @@ def client_id() -> str:
 
 def model_assessment(text: str) -> tuple[str, str]:
     """Classify with the trained dataset model only—no keywords or heuristics."""
-    probabilities = MODEL.predict_proba([text])[0]
-    classes = MODEL.named_steps["classifier"].classes_
-    index = int(probabilities.argmax())
-    severity = str(classes[index])
-    confidence = float(probabilities[index])
-    return severity, f"{SEVERITY_LABELS[severity]} ({confidence:.0%} confidence)"
+    safety_model = MODEL_BUNDLE["safety_model"]
+    safety_probabilities = safety_model.predict_proba([text])[0]
+    safety_classes = list(safety_model.named_steps["classifier"].classes_)
+    unsafe_probability = float(safety_probabilities[safety_classes.index("unsafe")])
+    if unsafe_probability < 0.5:
+        safe_probability = float(safety_probabilities[safety_classes.index("safe")])
+        return "safe", f"{SEVERITY_LABELS['safe']} ({safe_probability:.0%} confidence)"
+    severity_model = MODEL_BUNDLE["severity_model"]
+    severity_probabilities = severity_model.predict_proba([text])[0]
+    severity_classes = list(severity_model.named_steps["classifier"].classes_)
+    severity = str(severity_classes[int(severity_probabilities.argmax())])
+    confidence = float(severity_probabilities.max())
+    return severity, f"{SEVERITY_LABELS[severity]} ({confidence:.0%} severity confidence)"
 
 
 def safer_alternative(text: str, severity: str) -> str:
@@ -69,8 +81,9 @@ def moderate_message():
         return jsonify(error="Please type a message."), 400
     if len(text) > 1000:
         return jsonify(error="Messages must be 1,000 characters or fewer."), 400
-    if MODEL is None:
-        return jsonify(error="No trained model found. Run: python train_model.py --data-dir data/raw, then restart the app."), 503
+    if MODEL_BUNDLE is None:
+        detail = MODEL_ERROR or "No trained model found."
+        return jsonify(error=f"{detail} Run: python train_model.py --data-dir data/raw, then restart the app."), 503
 
     user = users[client_id()]
     now = time.time()

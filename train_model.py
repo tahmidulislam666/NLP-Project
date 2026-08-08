@@ -49,11 +49,30 @@ def load_official_jigsaw_test(data: Path) -> pd.DataFrame | None:
     return valid[["comment_text", "label"]].rename(columns={"comment_text": "text"}).dropna()
 
 
-def evaluate(model: Pipeline, texts: pd.Series, labels_true: pd.Series) -> dict:
+def predict_two_stage(bundle: dict, texts: pd.Series):
+    """Predict safe/unsafe first, then severity for unsafe messages only."""
+    import numpy as np
+    safety_model = bundle["safety_model"]
+    severity_model = bundle["severity_model"]
+    safety_probabilities = safety_model.predict_proba(texts)
+    safety_classes = list(safety_model.named_steps["classifier"].classes_)
+    unsafe_probability = safety_probabilities[:, safety_classes.index("unsafe")]
+    safe_probability = safety_probabilities[:, safety_classes.index("safe")]
+    severity_probabilities = severity_model.predict_proba(texts)
+    severity_classes = list(severity_model.named_steps["classifier"].classes_)
+    classes = ["safe", "mild", "moderate", "severe"]
+    probabilities = np.zeros((len(texts), len(classes)))
+    probabilities[:, 0] = safe_probability
+    for index, severity in enumerate(severity_classes):
+        probabilities[:, classes.index(str(severity))] = unsafe_probability * severity_probabilities[:, index]
+    severity_predictions = severity_model.predict(texts)
+    predictions = ["safe" if unsafe < 0.5 else str(severity) for unsafe, severity in zip(unsafe_probability, severity_predictions)]
+    return predictions, probabilities, classes
+
+
+def evaluate(bundle: dict, texts: pd.Series, labels_true: pd.Series) -> dict:
     """Calculate serializable metrics for one unseen evaluation dataset."""
-    predictions = model.predict(texts)
-    probabilities = model.predict_proba(texts)
-    classes = list(model.named_steps["classifier"].classes_)
+    predictions, probabilities, classes = predict_two_stage(bundle, texts)
     observed = [label for label in classes if label in set(labels_true)]
     result = {
         "rows": int(len(texts)),
@@ -124,20 +143,33 @@ def main() -> None:
             "bangla_holdout": (bn_test["text"], bn_test["label"]),
         }
         evaluation_source = "Stratified combined hold-out plus a stratified Bangla hold-out"
-    model = Pipeline([
+    safety_model = Pipeline([
         ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, max_features=180_000, sublinear_tf=True)),
         ("classifier", LogisticRegression(max_iter=500, class_weight="balanced")),
     ])
-    model.fit(X_train, y_train)
+    safety_model.fit(X_train, y_train.where(y_train == "safe", "unsafe"))
+    unsafe_rows = y_train != "safe"
+    severity_model = Pipeline([
+        ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, max_features=180_000, sublinear_tf=True)),
+        ("classifier", LogisticRegression(max_iter=500, class_weight="balanced")),
+    ])
+    severity_model.fit(X_train[unsafe_rows], y_train[unsafe_rows])
+    model_bundle = {
+        "format_version": 2,
+        "safety_model": safety_model,
+        "severity_model": severity_model,
+        "description": "Two-stage safe/unsafe followed by mild/moderate/severe",
+    }
 
     metrics = {
         "training_rows": int(len(X_train)),
         "evaluation_source": evaluation_source,
-        "evaluations": {name: evaluate(model, texts, labels_true) for name, (texts, labels_true) in evaluations.items()},
+        "architecture": "Two-stage: safe/unsafe, then mild/moderate/severe for unsafe messages",
+        "evaluations": {name: evaluate(model_bundle, texts, labels_true) for name, (texts, labels_true) in evaluations.items()},
     }
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(model, destination)
+    joblib.dump(model_bundle, destination)
     report_path = destination.with_name("evaluation_metrics.json")
     report_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
     print(f"Saved model trained on {len(X_train):,} messages to {destination}")

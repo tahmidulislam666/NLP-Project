@@ -1,6 +1,6 @@
 # AnomalyShield — Harmful Speech Detection Chatbot
 
-A local Flask chatbot that uses a model trained on the supplied Jigsaw and Bangla datasets to block harmful English, Bangla, and code-mixed messages. It assigns **mild / moderate / severe** severity, records violations, and applies escalating cooldowns.
+A local Flask chatbot that uses a two-stage model trained on the supplied Jigsaw and Bangla datasets. It first identifies **safe / unsafe** messages, then assigns unsafe messages **mild / moderate / severe** severity before applying violations and cooldowns.
 
 ## Run
 
@@ -12,7 +12,7 @@ python train_model.py --data-dir data/raw
 python app.py
 ```
 
-Then open `http://127.0.0.1:5000`.
+Then open `http://127.0.0.1:5000`. Retrain whenever `train_model.py` changes; the app requires the current two-stage model format.
 
 ## Moderation policy
 
