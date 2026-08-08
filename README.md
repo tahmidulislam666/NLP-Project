@@ -19,7 +19,8 @@ Then open `http://127.0.0.1:5000`.
 | Finding | Result |
 | --- | --- |
 | Safe | Message delivered |
-| Mild or moderate unsafe message | Message blocked, violation recorded, and alternative wording shown |
+| Mild unsafe message | Message blocked and alternative wording shown; no violation recorded |
+| Moderate unsafe message | Message blocked, violation recorded, and alternative wording shown |
 | Severe unsafe message (fewer than 5 violations) | Message blocked and sending paused for 3 minutes |
 | 3–4 violations | Message blocked and sending paused for 3 minutes |
 | 5+ violations | 5 minute block |

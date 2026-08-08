@@ -25,7 +25,9 @@ async function submit() {
     if (data.blocked) { addBubble('<strong>Message paused</strong>Your cooldown is still active.', 'alert'); showCooldown(data.seconds_left); return; }
     if (data.unsafe) {
       addBubble(`<strong>Blocked · ${data.severity.toUpperCase()}</strong>${data.category}. Let’s keep the conversation safe.<div class="suggestion">Try instead: “${escapeHTML(data.safer_alternative)}”</div>`, 'alert');
-      if (data.cooldown) showCooldown(data.cooldown); else { statusTitle.textContent = 'Warning issued'; statusCopy.textContent = `${data.violations} violation${data.violations === 1 ? '' : 's'} recorded.`; }
+      if (data.cooldown) showCooldown(data.cooldown);
+      else if (data.violation_recorded) { statusTitle.textContent = 'Violation recorded'; statusCopy.textContent = `${data.violations} violation${data.violations === 1 ? '' : 's'} recorded.`; }
+      else { statusTitle.textContent = 'Mild-content warning'; statusCopy.textContent = 'This message was blocked, but no violation was recorded.'; }
     } else { addBubble('Message delivered. Thanks for keeping it constructive.', 'allowed'); statusTitle.textContent = 'Safety check passed'; statusCopy.textContent = 'Your message was classified as safe.'; }
   } catch { addBubble('<strong>Connection problem</strong>Please make sure the moderation server is running.', 'alert'); }
   finally { if (!document.body.classList.contains('blocked')) send.disabled = false; message.focus(); }

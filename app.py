@@ -81,15 +81,20 @@ def moderate_message():
     severity, category = model_assessment(text)
     unsafe = severity != "safe"
     cooldown = 0
+    violation_recorded = False
     if unsafe:
-        user["violations"] += 1
-        # Five violations always receive the longest cooldown, regardless of severity.
-        if user["violations"] >= 5:
-            cooldown = 300
-        elif severity == "severe":
-            cooldown = 180
-        elif user["violations"] >= 3:
-            cooldown = 180
+        # Mild content is blocked and rewritten, but does not penalize the user.
+        # Only moderate and severe messages add to the escalation record.
+        if severity in {"moderate", "severe"}:
+            user["violations"] += 1
+            violation_recorded = True
+            # Five violations always receive the longest cooldown, regardless of severity.
+            if user["violations"] >= 5:
+                cooldown = 300
+            elif severity == "severe":
+                cooldown = 180
+            elif user["violations"] >= 3:
+                cooldown = 180
         user["blocked_until"] = now + cooldown
 
     return jsonify(
@@ -98,6 +103,7 @@ def moderate_message():
         severity=severity,
         category=category,
         violations=user["violations"],
+        violation_recorded=violation_recorded,
         cooldown=cooldown,
         safer_alternative=safer_alternative(text, severity),
     )

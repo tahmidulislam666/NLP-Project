@@ -31,6 +31,9 @@ def main() -> None:
     english["label"] = "safe"
     english.loc[harmful_count > 0, "label"] = "mild"
     english.loc[harmful_count >= 2, "label"] = "moderate"
+    # Identity-based hate is never treated as only mild; threat/severe labels
+    # below still take precedence and elevate it to severe.
+    english.loc[english["identity_hate"] == 1, "label"] = "moderate"
     english.loc[(english["threat"] == 1) | (english["severe_toxic"] == 1), "label"] = "severe"
     en = english[["comment_text", "label"]].rename(columns={"comment_text": "text"})
 
