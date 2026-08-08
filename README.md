@@ -35,4 +35,10 @@ The supplied source files were extracted to `data/raw/` (ignored by Git). Train 
 python train_model.py --data-dir data/raw
 ```
 
-Use `--max-rows 20000` for a quicker experiment. Evaluate the model on held-out English and Bangla data before moderation use.
+When `data/raw/test.csv` and `data/raw/test_labels.csv` are present, the script trains on Jigsaw training rows plus 80% of Bangla rows, then evaluates against Jigsaw's independent official test rows with valid labels (rows containing `-1` are excluded) and the unseen 20% Bangla hold-out. If those files are unavailable, it falls back to a stratified combined split while still reporting the separate Bangla hold-out.
+
+It prints accuracy, weighted precision, recall, F1, and one-vs-rest ROC-AUC, then saves the detailed per-class report to `models/evaluation_metrics.json`.
+
+The console output and JSON report contain separate `english_jigsaw_official_test` and `bangla_holdout` sections. Use both when presenting multilingual model performance.
+
+Use `--max-rows 20000` for a quicker experiment. Report these held-out metrics—not training-set results—when presenting the model.
