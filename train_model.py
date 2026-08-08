@@ -37,7 +37,9 @@ def main() -> None:
     # The CSV is UTF-8; errors='replace' keeps one malformed row from stopping training.
     bangla = pd.read_csv(data / "Bengali hate speech .csv", encoding="utf-8", encoding_errors="replace")
     bn = bangla[["sentence", "hate"]].rename(columns={"sentence": "text", "hate": "label"})
-    bn["label"] = bn["label"].map({0: "safe", 1: "moderate"})
+    # The Bangla source is binary. Per project policy, every hateful Bangla row
+    # receives the highest severity so it triggers the immediate cooldown.
+    bn["label"] = bn["label"].map({0: "safe", 1: "severe"})
     dataset = pd.concat([en, bn], ignore_index=True).dropna()
     if args.max_rows:
         per_class = max(1, args.max_rows // dataset["label"].nunique())
