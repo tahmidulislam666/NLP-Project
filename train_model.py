@@ -88,7 +88,17 @@ def evaluate(bundle: dict, texts: pd.Series, labels_true: pd.Series) -> dict:
         result["roc_auc"] = roc_auc_score(labels_true == positive_label, probabilities[:, positive_index])
         result["roc_auc_type"] = f"binary ({positive_label} vs. other)"
     elif len(observed) == len(classes):
-        result["roc_auc"] = roc_auc_score(labels_true, probabilities, labels=classes, multi_class="ovr", average="weighted")
+        # sklearn requires the ROC-AUC labels and probability columns to use
+        # alphabetical order; keep the app's severity order elsewhere.
+        roc_labels = sorted(classes)
+        roc_columns = [classes.index(label) for label in roc_labels]
+        result["roc_auc"] = roc_auc_score(
+            labels_true,
+            probabilities[:, roc_columns],
+            labels=roc_labels,
+            multi_class="ovr",
+            average="weighted",
+        )
         result["roc_auc_type"] = "multiclass one-vs-rest weighted"
     else:
         result["roc_auc"] = None
