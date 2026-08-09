@@ -37,8 +37,11 @@ python train_model.py --data-dir data/raw
 
 When `data/raw/test.csv` and `data/raw/test_labels.csv` are present, the script trains on Jigsaw training rows plus 80% of Bangla rows, then evaluates against Jigsaw's independent official test rows with valid labels (rows containing `-1` are excluded) and the unseen 20% Bangla hold-out. If those files are unavailable, it falls back to a stratified combined split while still reporting the separate Bangla hold-out.
 
-It prints accuracy, weighted precision, recall, F1, and one-vs-rest ROC-AUC, then saves the detailed per-class report to `models/evaluation_metrics.json`.
+It writes two detailed reports after training:
 
-The console output and JSON report contain separate `english_jigsaw_official_test` and `bangla_holdout` sections. Use both when presenting multilingual model performance.
+- `models/stage1_evaluation_metrics.json` evaluates the shared **safe / unsafe** Stage 1 separately on English Jigsaw test data and the Bangla hold-out.
+- `models/stage2_evaluation_metrics.json` evaluates English **mild / moderate / severe** Stage 2 using only known-unsafe English test messages.
+
+Both reports contain accuracy, weighted and macro F1, ROC-AUC, and per-class results. Use the Stage 1 report for multilingual safety performance and the Stage 2 report for English severity performance.
 
 Use `--max-rows 20000` for a quicker experiment. Report these held-out metrics—not training-set results—when presenting the model.

@@ -1,7 +1,7 @@
 """Train and evaluate a multilingual TF-IDF model from the supplied datasets.
 
 Run: python train_model.py --data-dir data/raw
-It saves both a deployment model and held-out evaluation metrics.
+It saves a deployment model plus separate Stage 1 and Stage 2 held-out reports.
 """
 from __future__ import annotations
 
@@ -95,16 +95,16 @@ def predict_two_stage(bundle: dict, texts: pd.Series):
     return predictions, probabilities, classes
 
 
-def evaluate(bundle: dict, texts: pd.Series, labels_true: pd.Series) -> dict:
-    """Calculate serializable metrics for one unseen evaluation dataset."""
-    predictions, probabilities, classes = predict_two_stage(bundle, texts)
+def evaluation_result(labels_true: pd.Series, predictions, probabilities, classes: list[str]) -> dict:
+    """Calculate serializable classification metrics for one unseen dataset."""
     observed = [label for label in classes if label in set(labels_true)]
     result = {
-        "rows": int(len(texts)),
+        "rows": int(len(labels_true)),
         "accuracy": accuracy_score(labels_true, predictions),
         "precision_weighted": precision_score(labels_true, predictions, average="weighted", zero_division=0),
         "recall_weighted": recall_score(labels_true, predictions, average="weighted", zero_division=0),
         "f1_weighted": f1_score(labels_true, predictions, average="weighted", zero_division=0),
+        "f1_macro": f1_score(labels_true, predictions, average="macro", zero_division=0),
         "classification_report": classification_report(labels_true, predictions, labels=classes, output_dict=True, zero_division=0),
     }
     if len(observed) == 2:
@@ -129,6 +129,33 @@ def evaluate(bundle: dict, texts: pd.Series, labels_true: pd.Series) -> dict:
         result["roc_auc"] = None
         result["roc_auc_type"] = "not calculated: evaluation set does not contain every model class"
     return result
+
+
+def evaluate_stage1(safety_model: Pipeline, texts: pd.Series, severity_labels: pd.Series) -> dict:
+    """Evaluate the shared first stage as binary safe/unsafe classification."""
+    import numpy as np
+    labels_true = severity_labels.where(severity_labels == "safe", "unsafe")
+    classes = ["safe", "unsafe"]
+    probabilities = safety_model.predict_proba(texts)
+    model_classes = list(safety_model.named_steps["classifier"].classes_)
+    unsafe_probabilities = probabilities[:, model_classes.index("unsafe")]
+    safe_probabilities = probabilities[:, model_classes.index("safe")]
+    combined_probabilities = np.column_stack((safe_probabilities, unsafe_probabilities))
+    predictions = safety_model.predict(texts)
+    result = evaluation_result(labels_true, predictions, combined_probabilities, classes)
+    result["roc_auc"] = roc_auc_score(labels_true == "unsafe", unsafe_probabilities)
+    result["roc_auc_type"] = "binary (unsafe vs. safe)"
+    return result
+
+
+def evaluate_stage2(severity_model: Pipeline, texts: pd.Series, labels_true: pd.Series) -> dict:
+    """Evaluate English severity classification on known-unsafe messages only."""
+    classes = ["mild", "moderate", "severe"]
+    probabilities = severity_model.predict_proba(texts)
+    model_classes = list(severity_model.named_steps["classifier"].classes_)
+    ordered_probabilities = probabilities[:, [model_classes.index(label) for label in classes]]
+    predictions = severity_model.predict(texts)
+    return evaluation_result(labels_true, predictions, ordered_probabilities, classes)
 
 
 def main() -> None:
@@ -164,19 +191,26 @@ def main() -> None:
         # Official competition test labels are independent of training data, so
         # train on all available English and Bangla training messages.
         X_train, y_train = dataset["text"], dataset["label"]
-        evaluations = {
+        stage1_evaluations = {
             "english_jigsaw_official_test": (official_test["text"], official_test["label"]),
             "bangla_holdout": (bn_test["text"], bn_test["label"]),
         }
+        stage2_texts = official_test.loc[official_test["label"] != "safe", "text"]
+        stage2_labels = official_test.loc[official_test["label"] != "safe", "label"]
+        stage2_evaluation_name = "english_jigsaw_official_unsafe_test"
         evaluation_source = "Jigsaw official labeled test set plus a stratified Bangla hold-out"
     else:
         X_train, X_test, y_train, y_test = train_test_split(
             dataset["text"], dataset["label"], test_size=args.test_size, random_state=42, stratify=dataset["label"]
         )
-        evaluations = {
-            "combined_stratified_holdout": (X_test, y_test),
+        english_test_rows = ~X_test.map(is_bangla)
+        stage1_evaluations = {
+            "english_stratified_holdout": (X_test[english_test_rows], y_test[english_test_rows]),
             "bangla_holdout": (bn_test["text"], bn_test["label"]),
         }
+        stage2_texts = X_test[english_test_rows & (y_test != "safe")]
+        stage2_labels = y_test[english_test_rows & (y_test != "safe")]
+        stage2_evaluation_name = "english_stratified_unsafe_holdout"
         evaluation_source = "Stratified combined hold-out plus a stratified Bangla hold-out"
     safety_model = Pipeline([
         ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, max_features=180_000, sublinear_tf=True)),
@@ -200,27 +234,42 @@ def main() -> None:
         "description": "Safety stage for all text; English severity stage; Bangla unsafe maps to severe",
     }
 
-    metrics = {
+    stage1_metrics = {
         "training_rows": int(len(X_train)),
         "evaluation_source": evaluation_source,
-        "architecture": "Safety stage for all text; English unsafe uses mild/moderate/severe Stage 2; Bangla unsafe maps to severe",
-        "evaluations": {name: evaluate(model_bundle, texts, labels_true) for name, (texts, labels_true) in evaluations.items()},
+        "stage": "Stage 1: safe vs. unsafe for English and Bangla",
+        "evaluations": {
+            name: evaluate_stage1(safety_model, texts, labels_true)
+            for name, (texts, labels_true) in stage1_evaluations.items()
+        },
+    }
+    stage2_metrics = {
+        "training_rows": int(english_unsafe_rows.sum()),
+        "evaluation_source": evaluation_source,
+        "stage": "Stage 2: English mild/moderate/severe on known-unsafe English messages only",
+        "evaluations": {
+            stage2_evaluation_name: evaluate_stage2(severity_model, stage2_texts, stage2_labels),
+        },
     }
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model_bundle, destination)
-    report_path = destination.with_name("evaluation_metrics.json")
-    report_path.write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    stage1_report_path = destination.with_name("stage1_evaluation_metrics.json")
+    stage2_report_path = destination.with_name("stage2_evaluation_metrics.json")
+    stage1_report_path.write_text(json.dumps(stage1_metrics, indent=2), encoding="utf-8")
+    stage2_report_path.write_text(json.dumps(stage2_metrics, indent=2), encoding="utf-8")
     print(f"Saved model trained on {len(X_train):,} messages to {destination}")
     print(f"Evaluation source: {evaluation_source}")
-    for name, result in metrics["evaluations"].items():
-        print(f"{name} ({result['rows']:,} messages):")
-        print(f"  Accuracy: {result['accuracy']:.3f}")
-        print(f"  Precision (weighted): {result['precision_weighted']:.3f}")
-        print(f"  Recall (weighted): {result['recall_weighted']:.3f}")
-        print(f"  F1 score (weighted): {result['f1_weighted']:.3f}")
-        print(f"  ROC-AUC ({result['roc_auc_type']}): {result['roc_auc']:.3f}" if result["roc_auc"] is not None else f"  ROC-AUC: {result['roc_auc_type']}")
-    print(f"Detailed report saved to {report_path}")
+    for stage_name, metrics in (("Stage 1", stage1_metrics), ("Stage 2", stage2_metrics)):
+        print(f"{stage_name} evaluation:")
+        for name, result in metrics["evaluations"].items():
+            print(f"  {name} ({result['rows']:,} messages):")
+            print(f"    Accuracy: {result['accuracy']:.3f}")
+            print(f"    F1 score (weighted): {result['f1_weighted']:.3f}")
+            print(f"    F1 score (macro): {result['f1_macro']:.3f}")
+            print(f"    ROC-AUC ({result['roc_auc_type']}): {result['roc_auc']:.3f}" if result["roc_auc"] is not None else f"    ROC-AUC: {result['roc_auc_type']}")
+    print(f"Stage 1 report saved to {stage1_report_path}")
+    print(f"Stage 2 report saved to {stage2_report_path}")
 
 
 if __name__ == "__main__":
