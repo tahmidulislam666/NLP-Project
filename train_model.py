@@ -21,6 +21,11 @@ from sklearn.model_selection import train_test_split
 TOXIC_COLUMNS = ["toxic", "severe_toxic", "obscene", "threat", "insult", "identity_hate"]
 
 
+def is_bangla(text: object) -> bool:
+    """Return whether text contains Bengali-script characters for model routing."""
+    return any("\u0980" <= character <= "\u09ff" for character in str(text))
+
+
 def add_english_severity_labels(frame: pd.DataFrame) -> pd.DataFrame:
     """Map Jigsaw's multi-label annotations to this project's four severities."""
     frame = frame.copy()
@@ -50,23 +55,43 @@ def load_official_jigsaw_test(data: Path) -> pd.DataFrame | None:
 
 
 def predict_two_stage(bundle: dict, texts: pd.Series):
-    """Predict safe/unsafe first, then severity for unsafe messages only."""
+    """Predict safety first; only English unsafe text receives severity classification."""
     import numpy as np
     safety_model = bundle["safety_model"]
     severity_model = bundle["severity_model"]
-    safety_probabilities = safety_model.predict_proba(texts)
+    texts_list = [str(text) for text in texts]
+    safety_probabilities = safety_model.predict_proba(texts_list)
     safety_classes = list(safety_model.named_steps["classifier"].classes_)
     unsafe_probability = safety_probabilities[:, safety_classes.index("unsafe")]
     safe_probability = safety_probabilities[:, safety_classes.index("safe")]
-    severity_probabilities = severity_model.predict_proba(texts)
     severity_classes = list(severity_model.named_steps["classifier"].classes_)
     classes = ["safe", "mild", "moderate", "severe"]
-    probabilities = np.zeros((len(texts), len(classes)))
+    probabilities = np.zeros((len(texts_list), len(classes)))
     probabilities[:, 0] = safe_probability
-    for index, severity in enumerate(severity_classes):
-        probabilities[:, classes.index(str(severity))] = unsafe_probability * severity_probabilities[:, index]
-    severity_predictions = severity_model.predict(texts)
-    predictions = ["safe" if unsafe < 0.5 else str(severity) for unsafe, severity in zip(unsafe_probability, severity_predictions)]
+    bangla_messages = [is_bangla(text) for text in texts_list]
+    english_indices = [index for index, is_bangla_message in enumerate(bangla_messages) if not is_bangla_message]
+    if english_indices:
+        english_texts = [texts_list[index] for index in english_indices]
+        severity_probabilities = severity_model.predict_proba(english_texts)
+        severity_predictions = severity_model.predict(english_texts)
+        for probability_index, severity in enumerate(severity_classes):
+            probabilities[english_indices, classes.index(str(severity))] = unsafe_probability[english_indices] * severity_probabilities[:, probability_index]
+    else:
+        severity_predictions = []
+    for index, is_bangla_message in enumerate(bangla_messages):
+        if is_bangla_message:
+            probabilities[index, classes.index("severe")] = unsafe_probability[index]
+    predictions = []
+    english_prediction_index = 0
+    for is_bangla_message, unsafe in zip(bangla_messages, unsafe_probability):
+        if unsafe < 0.5:
+            predictions.append("safe")
+        elif is_bangla_message:
+            predictions.append("severe")
+        else:
+            predictions.append(str(severity_predictions[english_prediction_index]))
+        if not is_bangla_message:
+            english_prediction_index += 1
     return predictions, probabilities, classes
 
 
@@ -163,18 +188,22 @@ def main() -> None:
         ("tfidf", TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), min_df=2, max_features=180_000, sublinear_tf=True)),
         ("classifier", LogisticRegression(max_iter=500, class_weight="balanced")),
     ])
-    severity_model.fit(X_train[unsafe_rows], y_train[unsafe_rows])
+    # Bangla source labels are binary: each unsafe row is necessarily severe.
+    # Do not teach Stage 2 that Bengali script itself means "severe"; it only
+    # learns English mild/moderate/severe distinctions.
+    english_unsafe_rows = (y_train != "safe") & ~X_train.map(is_bangla)
+    severity_model.fit(X_train[english_unsafe_rows], y_train[english_unsafe_rows])
     model_bundle = {
-        "format_version": 2,
+        "format_version": 3,
         "safety_model": safety_model,
         "severity_model": severity_model,
-        "description": "Two-stage safe/unsafe followed by mild/moderate/severe",
+        "description": "Safety stage for all text; English severity stage; Bangla unsafe maps to severe",
     }
 
     metrics = {
         "training_rows": int(len(X_train)),
         "evaluation_source": evaluation_source,
-        "architecture": "Two-stage: safe/unsafe, then mild/moderate/severe for unsafe messages",
+        "architecture": "Safety stage for all text; English unsafe uses mild/moderate/severe Stage 2; Bangla unsafe maps to severe",
         "evaluations": {name: evaluate(model_bundle, texts, labels_true) for name, (texts, labels_true) in evaluations.items()},
     }
     destination = Path(args.output)

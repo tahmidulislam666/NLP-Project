@@ -18,10 +18,10 @@ try:
     model_path = Path("models/toxicity_pipeline.joblib")
     if model_path.exists():
         candidate = joblib.load(model_path)
-        if isinstance(candidate, dict) and {"safety_model", "severity_model"}.issubset(candidate):
+        if isinstance(candidate, dict) and candidate.get("format_version", 0) >= 3 and {"safety_model", "severity_model"}.issubset(candidate):
             MODEL_BUNDLE = candidate
         else:
-            MODEL_ERROR = "The saved model uses the old single-stage format. Retrain it with train_model.py."
+            MODEL_ERROR = "The saved model uses an older model format. Retrain it with train_model.py."
 except (ImportError, OSError):
     MODEL_ERROR = "The trained model could not be loaded."
 
@@ -34,6 +34,11 @@ SEVERITY_LABELS = {
     "moderate": "Model-detected hate / abuse",
     "severe": "Model-detected severe toxicity / threat",
 }
+
+
+def is_bangla(text: str) -> bool:
+    """Route Bengali-script messages around the English-only severity model."""
+    return any("\u0980" <= character <= "\u09ff" for character in text)
 
 
 def client_id() -> str:
@@ -50,6 +55,10 @@ def model_assessment(text: str) -> tuple[str, str]:
     if unsafe_probability < 0.5:
         safe_probability = float(safety_probabilities[safety_classes.index("safe")])
         return "safe", f"{SEVERITY_LABELS['safe']} ({safe_probability:.0%} confidence)"
+    # The supplied Bangla dataset is binary: unsafe Bangla maps directly to
+    # severe, while Stage 2 is reserved for English severity distinctions.
+    if is_bangla(text):
+        return "severe", SEVERITY_LABELS["severe"]
     severity_model = MODEL_BUNDLE["severity_model"]
     severity_probabilities = severity_model.predict_proba([text])[0]
     severity_classes = list(severity_model.named_steps["classifier"].classes_)
